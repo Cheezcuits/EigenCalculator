@@ -8,23 +8,52 @@ import streamlit.components.v1 as components
 # ==========================================
 class EigenObject:
     def __init__(self, eigenvalue, basis, multiplicity):
-        self.eigenvalue = float(N(eigenvalue))
+        # 1. Handle Eigenvalue
+        val_n = N(eigenvalue)
+        if val_n.is_real:
+            self.eigenvalue = float(val_n)
+            self.is_complex = False
+        else:
+            # Keep as string if complex to prevent float conversion errors
+            self.eigenvalue = str(val_n).replace('I', 'i')
+            self.is_complex = True
+
         self.multiplicity = multiplicity
-        self.basis = [[round(float(N(v)), 4) for v in vec] for vec in basis]
+
+        # 2. Handle Basis Vectors
+        self.basis = []
+        for vec in basis:
+            formatted_vec = []
+            for v in vec:
+                v_n = N(v)
+                if v_n.is_real:
+                    # Round real numbers for clean display
+                    formatted_vec.append(round(float(v_n), 4))
+                else:
+                    # Keep complex numbers as strings
+                    formatted_vec.append(str(v_n).replace('I', 'i'))
+            self.basis.append(formatted_vec)
 
     def to_dict(self):
         return {
             "eigenvalue": self.eigenvalue,
             "multiplicity": self.multiplicity,
-            "basis": self.basis
+            "basis": self.basis,
+            "is_complex": self.is_complex
         }
 
 # ==========================================
-# PART 1: BACKEND
+# PART 1: BACKEND LOGIC
 # ==========================================
 def calculate_eigen_data(matrix_input):
     try:
-        matrix = Matrix(matrix_input)
+        # Force exact arithmetic (Rational) to ensure precision with zeros
+        exact_matrix_data = []
+        for row in matrix_input:
+            exact_row = [Rational(str(val)) for val in row]
+            exact_matrix_data.append(exact_row)
+            
+        matrix = Matrix(exact_matrix_data)
         n = matrix.shape[0]
 
         lam = symbols('λ')
@@ -32,35 +61,34 @@ def calculate_eigen_data(matrix_input):
         factored_poly = factor(char_poly.as_expr())
 
         eigenvals_dict = matrix.eigenvals()
-
         eigen_objects = []
         spectrum = []
         eigenspaces = []
 
         for lam_val, multiplicity in eigenvals_dict.items():
-            nullsp = (matrix - lam_val * eye(n)).nullspace()
-
+            # Calculate Nullspace
+            eigen_matrix = matrix - lam_val * eye(n)
+            nullsp = eigen_matrix.nullspace()
+            
+            # Create Object instance
             eig_obj = EigenObject(lam_val, nullsp, multiplicity)
             eigen_objects.append(eig_obj)
-
-            spectrum.extend([float(N(lam_val))] * multiplicity)
-
-            eigenspaces.append({
-                "eigenvalue": float(N(lam_val)),
-                "multiplicity": multiplicity,
-                "basis": [[round(float(N(v)), 4) for v in vec] for vec in nullsp]
-            })
+            
+            # Add to spectrum list
+            spectrum.append(eig_obj.eigenvalue)
+            
+            eigenspaces.append(eig_obj.to_dict())
 
         return {
             "success": True,
-            "determinant": float(N(matrix.det())),
+            "determinant": str(N(matrix.det())),
             "characteristic_polynomial": str(char_poly.as_expr()),
             "factored_polynomial": str(factored_poly),
             "eigen_objects": [eo.to_dict() for eo in eigen_objects],
             "spectrum": spectrum,
-            "eigenspaces": eigenspaces
+            "eigenspaces": eigenspaces,
+            "matrix_disp": str(matrix)
         }
-
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -79,14 +107,22 @@ def generate_eigen_svg(data):
     UNIT_CIRCLE_COLOR = "#aaa"
 
     def project(vector, scale, origin_x, origin_y):
-        # Only project real vectors of size >= 2
+        # Only project vectors of dimension >= 2
         if len(vector) < 2: return origin_x, origin_y
-        x, y = vector[0], vector[1]
-        return origin_x + x * scale, origin_y - y * scale
+        
+        try:
+            x, y = float(vector[0]), float(vector[1])
+            return origin_x + x * scale, origin_y - y * scale
+        except:
+            return origin_x, origin_y
 
     def normalize(vector):
-        norm = math.sqrt(sum(c**2 for c in vector))
-        return [c / norm for c in vector] if norm != 0 else vector
+        try:
+            vec_floats = [float(x) for x in vector]
+            norm = math.sqrt(sum(c**2 for c in vec_floats))
+            return [c / norm for c in vec_floats] if norm != 0 else vec_floats
+        except:
+            return vector
 
     def dashed_arrow(x1, y1, x2, y2, color, dashed=True):
         dash_attr = f'stroke-dasharray="{DASH_ARRAY}"' if dashed else ''
@@ -113,7 +149,7 @@ def generate_eigen_svg(data):
     has_real_vectors = False
 
     for obj in data.get("eigen_objects", []):
-        # SKIP COMPLEX EIGENVALUES FOR PLOTTING
+        # Skip visualization for complex eigenvalues
         if obj.get("is_complex"):
             continue
             
@@ -121,7 +157,11 @@ def generate_eigen_svg(data):
         basis_list = obj.get("basis", [])
         if not basis_list: continue
 
-        has_real_vectors = True
+        try:
+            test_val = float(basis_list[0][0])
+            has_real_vectors = True
+        except:
+            continue
 
         def signed_vector(v):
             return [c * (-1 if eigenvalue < 0 else 1) for c in v]
@@ -138,7 +178,7 @@ def generate_eigen_svg(data):
         labels_svg += f'<text x="{x2}" y="{y2 - 10}" font-size="{LABEL_FONT_SIZE}" fill="{COLOR_EIGENVALUE}" font-weight="bold" text-anchor="middle">λ={eigenvalue:.1f}</text>\n'
 
     if not has_real_vectors:
-        return None # Return None if nothing to draw
+        return None 
 
     arrow_defs = f'''
     <defs>
@@ -164,9 +204,9 @@ def generate_eigen_svg(data):
 # ==========================================
 # PART 3: FRONTEND UI
 # ==========================================
-st.set_page_config(page_title="Eigen-Stuff Calculator", layout="wide", page_icon="📐")
+st.set_page_config(page_title="Eigen Calculator", layout="wide", page_icon="📐")
 
-# CLEAN CSS: Force Light Mode & High Contrast
+# Custom CSS for styling
 st.markdown("""
 <style>
 /* Global Reset */
@@ -199,7 +239,7 @@ section[data-testid="stSidebar"] {
     border-radius: 8px;
 }
 
-/* Expanders (The Eigenspace Boxes) */
+/* Expanders */
 div[data-testid="stExpander"] {
     background-color: white !important;
     border: 1px solid #ddd !important;
@@ -217,14 +257,13 @@ div[data-testid="stExpanderDetails"] {
     color: #212529 !important;
 }
 
-/* --- NEW TAB STYLING: BLACK BOX --- */
+/* Tab Styling */
 div[data-baseweb="tab-list"] {
-    background-color: #212529 !important; /* Black Background */
+    background-color: #212529 !important;
     border-radius: 8px;
     padding: 8px;
     gap: 8px;
 }
-/* Inactive Tabs (White Text) */
 div[data-baseweb="tab"] {
     color: white !important;
     background-color: transparent !important;
@@ -232,7 +271,6 @@ div[data-baseweb="tab"] {
 div[data-baseweb="tab"] p {
     color: white !important;
 }
-/* Active Tab (Blue Background) */
 div[data-baseweb="tab"][aria-selected="true"] {
     background-color: #3B5BDB !important;
     border-radius: 6px;
@@ -258,7 +296,7 @@ div[data-baseweb="tab"][aria-selected="true"] p {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Eigen-stuff Calculator")
+st.title("Eigen Calculator")
 st.markdown("Enter an $n \\times n$ matrix (where $n \leq 5$) to calculate eigenvalues and eigenspace bases.")
 
 col_input, col_result = st.columns([1, 1], gap="large")
@@ -283,14 +321,18 @@ with col_input:
             
         st.markdown("<br>", unsafe_allow_html=True)
         calc_btn = st.button("Calculate")
-
-        # --- MANUAL LINK SECTION ---
-        # Adds a centered, intuitive link below the button
+        
         st.markdown("""
         <div style="text-align: center; margin-top: 20px;">
-            <a href="https://drive.google.com/file/d/1VeY_l_g50bxMhHB8ovb0i9tR87He6hWW/view?usp=sharing" target="_blank" style="text-decoration: none; color: #3B5BDB; font-weight: bold; font-size: 1.05rem;">
-                📖 Need help? Read the Manual Guide here
-            </a>
+            <p style="color: #666; font-size: 0.9rem; margin-bottom: 10px;">Need help solving? Click the links below!</p>
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+                <a href="https://drive.google.com/file/d/1VeY_l_g50bxMhHB8ovb0i9tR87He6hWW/view?usp=sharing" target="_blank" style="text-decoration: none; color: #3B5BDB; font-weight: bold; font-size: 1.05rem;">
+                    📖 Read the Manual Guide
+                </a>
+                <a href="https://drive.google.com/file/d/1MRF4rxETLYiJbUcTmzUKrDOdIgHJCvT2/view?usp=sharing" target="_blank" style="text-decoration: none; color: #3B5BDB; font-weight: bold; font-size: 1.05rem;">
+                    🧮 Read the Calculator Guide
+                </a>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -317,7 +359,6 @@ with col_result:
                 
                 with tab1:
                     st.write("The set of eigenvalues (spectrum):")
-                    # Handle display of potentially complex spectrum list
                     clean_spectrum = str(result['spectrum']).replace("'", "")
                     st.latex(f"\\sigma(A) = {clean_spectrum}")
                     
@@ -330,9 +371,8 @@ with col_result:
                 
                 with tab2:
                     for idx, space in enumerate(result['eigenspaces']):
-                        # Format label safely for complex numbers
                         eig_label = space['eigenvalue']
-                        if not isinstance(eig_label, str):
+                        if isinstance(eig_label, float):
                             eig_label = f"{eig_label:.4f}"
                             
                         with st.expander(
@@ -342,7 +382,6 @@ with col_result:
                             st.write(f"**Multiplicity:** {space['multiplicity']}")
                             
                             if space['basis']:
-                                # Format vectors as simple text lists for copy/paste friendliness
                                 vectors_text = ", ".join([str(vec) for vec in space['basis']])
                                 st.write(f"**Basis Vectors:** {vectors_text}")
                             else:
